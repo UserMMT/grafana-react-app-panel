@@ -1,0 +1,32 @@
+{
+  "type": "panel",
+  "name": "React App Panel",
+  "id": "grafana-react-app-panel",
+  "state": "alpha",
+  "category": "custom",
+  "description": "Embed full React applications with multi-page navigation and backend SQL queries",
+  "version": "1.0.0",
+  "updated": "2024-01-01",
+  "author": {
+    "name": "Your Name",
+    "url": "https://github.com/UserMMT"
+  },
+  "support": "community",
+  "logs": [],
+  "metrics": [],
+  "alerting": [],
+  "links": [],
+  "info": {
+    "keywords": [
+      "react",
+      "app",
+      "dashboard",
+      "sql",
+      "backend"
+    ],
+    "logos": {
+      "small": "img/logo.svg",
+      "large": "img/logo.svg"
+    }
+  }
+}
