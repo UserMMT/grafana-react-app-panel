@@ -1,34 +1,29 @@
 import { PanelPlugin } from '@grafana/data';
-import { SimplePanel } from './components/SimplePanel';
+import { AppPanel } from './components/AppPanel';
+import { AppPanelOptions } from './components/AppPanelOptions';
 import { PanelOptions } from './types';
-import { PanelOptions as PanelOptionsEditor } from './components/PanelOptions';
 
-export const plugin = new PanelPlugin<PanelOptions>(SimplePanel)
+export const plugin = new PanelPlugin<PanelOptions>(AppPanel)
   .setPanelOptions((builder) =>
     builder
       .addTextOption({
         path: 'appName',
         name: 'App Name',
-        description: 'Name/identifier of your React app',
-        defaultValue: 'My App',
+        description: 'Name of your React app',
+        defaultValue: 'My React App',
       })
-      .addBooleanSwitch({
-        path: 'enableDataFetch',
-        name: 'Enable Backend Queries',
-        description: 'Allow queries from configured datasources',
-        defaultValue: true,
-      })
-      .addBooleanSwitch({
-        path: 'enableTour',
-        name: 'Show Tour',
-        description: 'Display page tour on load',
-        defaultValue: false,
+      .addTextOption({
+        path: 'description',
+        name: 'Description',
+        description: 'Brief description of the app',
+        defaultValue: '',
       })
       .addCustomEditor({
-        path: 'queryConfig',
-        name: 'Query Configuration',
-        description: 'SQL queries and input mappings',
-        defaultValue: {},
-        editor: PanelOptionsEditor,
+        path: 'appCode',
+        name: 'Component Code',
+        id: 'appCode',
+        path: 'appCode',
+        defaultValue: '',
+        editor: AppPanelOptions,
       })
   );

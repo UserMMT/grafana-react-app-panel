@@ -3,9 +3,11 @@
  */
 export interface PanelOptions {
   appName: string;
-  enableDataFetch: boolean;
-  enableTour: boolean;
-  queryConfig: Record<string, QueryDefinition>;
+  description?: string;
+  appCode: string; // TSX/JSX code as string
+  enableDataFetch?: boolean;
+  enableTour?: boolean;
+  queryConfig?: Record<string, QueryDefinition>;
 }
 
 /**
