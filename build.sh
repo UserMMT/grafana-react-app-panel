@@ -1,1 +1,47 @@
-#!/bin/bash\n\n# Build script for Grafana React App Panel\n# Creates distribution archives for release\n\nset -e\n\necho \"🔨 Building Grafana React App Panel...\"\n\n# Install dependencies if needed\nif [ ! -d \"node_modules\" ]; then\n  echo \"📦 Installing dependencies...\"\n  npm install\nfi\n\n# Build plugin\necho \"⚙️  Building plugin...\"\nnpm run build\n\n# Create archives\necho \"📦 Creating distribution archives...\"\n\n# Get version from package.json\nVERSION=$(grep '\"version\"' package.json | cut -d'\"' -f4)\necho \"Version: $VERSION\"\n\n# Create release directory\nmkdir -p release\n\n# Create tar.gz archive\necho \"📦 Creating tar.gz archive...\"\ncd dist\ntar -czf ../release/grafana-react-app-panel-v${VERSION}.tar.gz .\ncd ..\n\n# Create ZIP archive\necho \"📦 Creating ZIP archive...\"\nzip -r release/grafana-react-app-panel-v${VERSION}.zip dist -x \"dist/.git*\"\n\necho \"✅ Build complete!\"\necho \"\"\necho \"📂 Release artifacts:\"\nls -lh release/\necho \"\"\necho \"🚀 To create a GitHub release:\"\necho \"  git tag v${VERSION}\"\necho \"  git push origin v${VERSION}\"\n"
+#!/bin/bash
+
+# Build script for Grafana React App Panel
+# Creates distribution archives for release
+
+set -e
+
+echo "Building Grafana React App Panel..."
+
+# Install dependencies if needed
+if [ ! -d "node_modules" ]; then
+  echo "Installing dependencies..."
+  npm install
+fi
+
+# Build plugin
+echo "Building plugin..."
+npm run build
+
+# Create archives
+echo "Creating distribution archives..."
+
+# Get version from package.json
+VERSION=$(grep '"version"' package.json | head -1 | cut -d'"' -f4)
+echo "Version: $VERSION"
+
+# Create release directory
+mkdir -p release
+
+# Create tar.gz archive
+echo "Creating tar.gz archive..."
+cd dist
+tar -czf ../release/grafana-react-app-panel-v${VERSION}.tar.gz .
+cd ..
+
+# Create ZIP archive
+echo "Creating ZIP archive..."
+zip -r release/grafana-react-app-panel-v${VERSION}.zip dist -x "dist/.git*"
+
+echo "Build complete!"
+echo ""
+echo "Release artifacts:"
+ls -lh release/
+echo ""
+echo "To create a GitHub release:"
+echo "  git tag v${VERSION}"
+echo "  git push origin v${VERSION}"

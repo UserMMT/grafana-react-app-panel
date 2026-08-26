@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { PanelProps } from '@grafana/data';
-import { useStyles2, Spinner, Alert } from '@grafana/ui';
+import { getTemplateSrv } from '@grafana/runtime';
+import { Spinner, Alert } from '@grafana/ui';
 import { PanelOptions, AppContextData } from '../types';
-import { BackendQueryClient } from '../utils/api';
+import { queryClient } from '../utils/api';
 import { App } from './App';
 
 interface Props extends PanelProps<PanelOptions> {}
@@ -22,7 +23,6 @@ export const SimplePanel: React.FC<Props> = ({
   fieldConfig,
   replaceVariables,
 }) => {
-  const queryClient = new BackendQueryClient();
   const [appContext, setAppContext] = useState<AppContextData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,7 +36,7 @@ export const SimplePanel: React.FC<Props> = ({
           const result = await queryClient.executeQuery(
             queryName,
             params,
-            options.queryConfig[queryName]?.cacheTime || 0
+            options.queryConfig?.[queryName]?.cacheTime || 0
           );
           return result;
         } catch (err) {
@@ -62,11 +62,17 @@ export const SimplePanel: React.FC<Props> = ({
             : null
         );
       },
-      variables: replaceVariables ? {} : {}, // Grafana variables
+      // Current value of every Grafana dashboard template variable, e.g.
+      // { dateArrete: '2026-08-25' } for a $dateArrete variable.
+      variables: Object.fromEntries(
+        getTemplateSrv()
+          .getVariables()
+          .map((v) => [v.name, replaceVariables(`$${v.name}`)])
+      ),
     };
 
     setAppContext(context);
-  }, [options, replaceVariables, queryClient]);
+  }, [options, replaceVariables]);
 
   if (!appContext) {
     return <Spinner />;

@@ -1,1 +1,165 @@
-import React, { useState, useCallback } from 'react';\nimport { Button, Alert, Tabs, TabsContent, TabsList, TabsTrigger, Spinner } from '@grafana/ui';\nimport { css } from '@emotion/css';\n\ninterface CodeEditorProps {\n  value: string;\n  onChange: (code: string) => void;\n  language?: 'tsx' | 'jsx' | 'html';\n  height?: number;\n  readOnly?: boolean;\n  showPreview?: boolean;\n}\n\n/**\n * TSX/JSX Code Editor with syntax highlighting and preview\n * \n * Features:\n * - Syntax highlighting\n * - Live preview of React components\n * - File upload support\n * - Code validation\n */\nexport const CodeEditor: React.FC<CodeEditorProps> = ({\n  value,\n  onChange,\n  language = 'tsx',\n  height = 400,\n  readOnly = false,\n  showPreview = true,\n}) => {\n  const [error, setError] = useState<string | null>(null);\n  const [activeTab, setActiveTab] = useState<'editor' | 'preview'>('editor');\n\n  const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {\n    const file = e.currentTarget.files?.[0];\n    if (!file) return;\n\n    const reader = new FileReader();\n    reader.onload = (event) => {\n      const content = event.target?.result as string;\n      onChange(content);\n      setError(null);\n    };\n    reader.onerror = () => {\n      setError('Failed to read file');\n    };\n    reader.readAsText(file);\n  }, [onChange]);\n\n  const handleValidate = useCallback(() => {\n    try {\n      // Basic syntax check\n      new Function('return ' + value);\n      setError(null);\n    } catch (err) {\n      setError(err instanceof Error ? err.message : 'Syntax error');\n    }\n  }, [value]);\n\n  return (\n    <div className={css`\n      display: flex;\n      flex-direction: column;\n      gap: 12px;\n    `}>\n      {/* Toolbar */}\n      <div className={css`\n        display: flex;\n        gap: 8px;\n        align-items: center;\n        flex-wrap: wrap;\n      `}>\n        <label>\n          <input\n            type=\"file\"\n            accept=\".tsx,.jsx,.ts,.js\"\n            onChange={handleFileUpload}\n            style={{ display: 'none' }}\n          />\n          <Button\n            variant=\"secondary\"\n            size=\"sm\"\n            onClick={(e) => {\n              const input = e.currentTarget.parentElement?.querySelector('input[type=\"file\"]');\n              (input as HTMLInputElement)?.click();\n            }}\n          >\n            📁 Upload File\n          </Button>\n        </label>\n        <Button variant=\"secondary\" size=\"sm\" onClick={handleValidate}>\n          ✓ Validate\n        </Button>\n        <span className={css`\n          font-size: 12px;\n          color: #999;\n          margin-left: auto;\n        `}>\n          Language: {language}\n        </span>\n      </div>\n\n      {error && (\n        <Alert severity=\"error\" title=\"Validation Error\">\n          {error}\n        </Alert>\n      )}\n\n      {showPreview ? (\n        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'editor' | 'preview')}>\n          <TabsList>\n            <TabsTrigger value=\"editor\">Editor</TabsTrigger>\n            <TabsTrigger value=\"preview\">Preview</TabsTrigger>\n          </TabsList>\n\n          <TabsContent value=\"editor\">\n            <textarea\n              value={value}\n              onChange={(e) => onChange(e.currentTarget.value)}\n              readOnly={readOnly}\n              spellCheck=\"false\"\n              className={css`\n                width: 100%;\n                height: ${height}px;\n                padding: 12px;\n                font-family: 'Monaco', 'Courier New', monospace;\n                font-size: 12px;\n                line-height: 1.5;\n                border: 1px solid #ddd;\n                border-radius: 4px;\n                background: #f5f5f5;\n                color: #333;\n                resize: vertical;\n                \n                &:focus {\n                  outline: none;\n                  border-color: #0078d4;\n                  box-shadow: 0 0 0 2px rgba(0, 120, 212, 0.1);\n                }\n              `}\n            />\n          </TabsContent>\n\n          <TabsContent value=\"preview\">\n            <div className={css`\n              height: ${height}px;\n              border: 1px solid #ddd;\n              border-radius: 4px;\n              background: #fff;\n              overflow: auto;\n              padding: 16px;\n            `}>\n              <CodePreview code={value} />\n            </div>\n          </TabsContent>\n        </Tabs>\n      ) : (\n        <textarea\n          value={value}\n          onChange={(e) => onChange(e.currentTarget.value)}\n          readOnly={readOnly}\n          spellCheck=\"false\"\n          className={css`\n            width: 100%;\n            height: ${height}px;\n            padding: 12px;\n            font-family: 'Monaco', 'Courier New', monospace;\n            font-size: 12px;\n            line-height: 1.5;\n            border: 1px solid #ddd;\n            border-radius: 4px;\n            background: #f5f5f5;\n            color: #333;\n            resize: vertical;\n            \n            &:focus {\n              outline: none;\n              border-color: #0078d4;\n              box-shadow: 0 0 0 2px rgba(0, 120, 212, 0.1);\n            }\n          `}\n        />\n      )}\n    </div>\n  );\n};\n\n/**\n * Preview renderer for TSX code\n */\nfunction CodePreview({ code }: { code: string }) {\n  const [error, setError] = useState<string | null>(null);\n  const [Component, setComponent] = useState<React.ComponentType | null>(null);\n  const [loading, setLoading] = useState(false);\n\n  React.useEffect(() => {\n    if (!code.trim()) return;\n\n    setLoading(true);\n    setError(null);\n\n    // Compile and render the component\n    try {\n      // Create a function that returns the component\n      const fn = new Function('React', 'exports', code + '\\nreturn exports.default || exports;');\n      const componentModule = fn(React, {});\n      const Comp = componentModule.default || componentModule;\n\n      if (typeof Comp === 'function') {\n        setComponent(() => Comp);\n      } else {\n        setError('No default export found');\n      }\n    } catch (err) {\n      setError(err instanceof Error ? err.message : 'Compilation error');\n      setComponent(null);\n    } finally {\n      setLoading(false);\n    }\n  }, [code]);\n\n  if (loading) return <Spinner />;\n  if (error) return <Alert severity=\"error\">{error}</Alert>;\n  if (!Component) return <p>No component to display</p>;\n\n  return (\n    <React.Suspense fallback={<Spinner />}>\n      <Component />\n    </React.Suspense>\n  );\n}\n"
+import React, { useState, useCallback } from 'react';
+import { Button, Alert, TabsBar, Tab, TabContent } from '@grafana/ui';
+import { css } from '@emotion/css';
+import { DynamicComponentRenderer } from './DynamicComponentRenderer';
+
+interface CodeEditorProps {
+  value: string;
+  onChange: (code: string) => void;
+  language?: 'tsx' | 'jsx' | 'html';
+  height?: number;
+  readOnly?: boolean;
+  showPreview?: boolean;
+}
+
+/**
+ * TSX/JSX Code Editor with syntax highlighting and preview
+ *
+ * Features:
+ * - Live preview of React components (via DynamicComponentRenderer)
+ * - File upload support
+ */
+export const CodeEditor: React.FC<CodeEditorProps> = ({
+  value,
+  onChange,
+  language = 'tsx',
+  height = 400,
+  readOnly = false,
+  showPreview = true,
+}) => {
+  const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'editor' | 'preview'>('editor');
+
+  const handleFileUpload = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.currentTarget.files?.[0];
+      if (!file) {
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const content = event.target?.result as string;
+        onChange(content);
+        setError(null);
+      };
+      reader.onerror = () => {
+        setError('Failed to read file');
+      };
+      reader.readAsText(file);
+    },
+    [onChange]
+  );
+
+  const editorTextarea = (
+    <textarea
+      value={value}
+      onChange={(e) => onChange(e.currentTarget.value)}
+      readOnly={readOnly}
+      spellCheck={false}
+      className={css`
+        width: 100%;
+        height: ${height}px;
+        padding: 12px;
+        font-family: 'Monaco', 'Courier New', monospace;
+        font-size: 12px;
+        line-height: 1.5;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        background: #f5f5f5;
+        color: #333;
+        resize: vertical;
+
+        &:focus {
+          outline: none;
+          border-color: #0078d4;
+          box-shadow: 0 0 0 2px rgba(0, 120, 212, 0.1);
+        }
+      `}
+    />
+  );
+
+  return (
+    <div
+      className={css`
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      `}
+    >
+      {/* Toolbar */}
+      <div
+        className={css`
+          display: flex;
+          gap: 8px;
+          align-items: center;
+          flex-wrap: wrap;
+        `}
+      >
+        <label>
+          <input
+            type="file"
+            accept=".tsx,.jsx,.ts,.js"
+            onChange={handleFileUpload}
+            style={{ display: 'none' }}
+          />
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={(e) => {
+              const input = e.currentTarget.parentElement?.querySelector('input[type="file"]');
+              (input as HTMLInputElement)?.click();
+            }}
+          >
+            Upload File
+          </Button>
+        </label>
+        <span
+          className={css`
+            font-size: 12px;
+            color: #999;
+            margin-left: auto;
+          `}
+        >
+          Language: {language}
+        </span>
+      </div>
+
+      {error && (
+        <Alert severity="error" title="File Upload Error">
+          {error}
+        </Alert>
+      )}
+
+      {showPreview ? (
+        <>
+          <TabsBar>
+            <Tab label="Editor" active={activeTab === 'editor'} onChangeTab={() => setActiveTab('editor')} />
+            <Tab label="Preview" active={activeTab === 'preview'} onChangeTab={() => setActiveTab('preview')} />
+          </TabsBar>
+
+          <TabContent>
+            {activeTab === 'editor' && editorTextarea}
+
+            {activeTab === 'preview' && (
+              <div
+                className={css`
+                  height: ${height}px;
+                  border: 1px solid #ddd;
+                  border-radius: 4px;
+                  background: #fff;
+                  overflow: auto;
+                  padding: 16px;
+                `}
+              >
+                <DynamicComponentRenderer code={value} showErrors={true} />
+              </div>
+            )}
+          </TabContent>
+        </>
+      ) : (
+        editorTextarea
+      )}
+    </div>
+  );
+};

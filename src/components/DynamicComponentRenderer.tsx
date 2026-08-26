@@ -1,1 +1,123 @@
-import React, { useState, useMemo } from 'react';\nimport { Alert, Spinner } from '@grafana/ui';\nimport { css } from '@emotion/css';\n\ninterface DynamicComponentRendererProps {\n  /**\n   * TSX/JSX code as string\n   * Must export a default React component\n   */\n  code: string;\n\n  /**\n   * Props to pass to the rendered component\n   */\n  componentProps?: Record<string, any>;\n\n  /**\n   * Additional imports available to the component\n   * Example: { Button, Input, ... }\n   */\n  externalImports?: Record<string, any>;\n\n  /**\n   * Show error details\n   */\n  showErrors?: boolean;\n}\n\n/**\n * Dynamically render TSX/JSX code as a React component\n *\n * Features:\n * - Compile and execute code at runtime\n * - Pass props to rendered component\n * - Inject external dependencies\n * - Error handling and display\n *\n * @example\n * ```tsx\n * <DynamicComponentRenderer\n *   code={`\n *     export default function MyComponent() {\n *       return <div>Hello World</div>\n *     }\n *   `}\n *   componentProps={{ title: \"My App\" }}\n *   externalImports={{ Button, Input }}\n * />\n * ```\n */\nexport const DynamicComponentRenderer: React.FC<DynamicComponentRendererProps> = ({\n  code,\n  componentProps = {},\n  externalImports = {},\n  showErrors = true,\n}) => {\n  const [error, setError] = useState<string | null>(null);\n  const [loading, setLoading] = useState(false);\n\n  const CompiledComponent = useMemo(() => {\n    if (!code.trim()) {\n      setError('No code provided');\n      return null;\n    }\n\n    setLoading(true);\n    setError(null);\n\n    try {\n      // Prepare available globals for the code\n      const globals = {\n        React,\n        ...externalImports,\n      };\n\n      // Get global names and values\n      const globalNames = Object.keys(globals);\n      const globalValues = Object.values(globals);\n\n      // Create function that executes code\n      // Code should have: export default SomeComponent or module.exports = SomeComponent\n      const wrappedCode = `\n        (function() {\n          const exports = {};\n          const module = { exports };\n          \n          ${code}\n          \n          return module.exports.default || exports.default || module.exports;\n        })()\n      `;\n\n      // Create function with globals in scope\n      const compileFn = new Function(...globalNames, `return ${wrappedCode}`);\n      const ComponentModule = compileFn(...globalValues);\n\n      // Validate that we got a component\n      if (!React.isValidElementType(ComponentModule)) {\n        setError('Code must export a valid React component');\n        setLoading(false);\n        return null;\n      }\n\n      setLoading(false);\n      return ComponentModule;\n    } catch (err) {\n      const errorMessage = err instanceof Error ? err.message : 'Unknown error';\n      setError(errorMessage);\n      setLoading(false);\n      return null;\n    }\n  }, [code, externalImports]);\n\n  if (loading) {\n    return <Spinner />;\n  }\n\n  if (error && showErrors) {\n    return (\n      <Alert severity=\"error\" title=\"Component Render Error\">\n        <code\n          className={css`\n            font-family: monospace;\n            font-size: 12px;\n            white-space: pre-wrap;\n            word-break: break-word;\n          `}\n        >\n          {error}\n        </code>\n      </Alert>\n    );\n  }\n\n  if (!CompiledComponent) {\n    return null;\n  }\n\n  return (\n    <React.Suspense fallback={<Spinner />}>\n      <CompiledComponent {...componentProps} />\n    </React.Suspense>\n  );\n};\n"
+import React, { useState, useMemo } from 'react';
+import { Alert, Spinner } from '@grafana/ui';
+import { css } from '@emotion/css';
+import { isValidElementType } from 'react-is';
+import { transform } from 'sucrase';
+
+/**
+ * Modules the sandboxed code is allowed to `import ... from '<name>'`.
+ * Keyed by the module specifier, not a local variable name.
+ */
+const DEFAULT_MODULES: Record<string, any> = {
+  react: React,
+  '@emotion/css': { css },
+};
+
+interface DynamicComponentRendererProps {
+  /**
+   * Raw TSX/JSX source as a string. Transpiled to plain JS in-browser
+   * (via sucrase) before execution. Must export a default React component.
+   */
+  code: string;
+
+  /**
+   * Props to pass to the rendered component
+   */
+  componentProps?: Record<string, any>;
+
+  /**
+   * Extra modules the code is allowed to `import` from, keyed by module
+   * specifier, e.g. `{ '@grafana/ui': GrafanaUI }`. Merged over the
+   * built-in `react` / `@emotion/css` modules.
+   */
+  externalImports?: Record<string, any>;
+
+  /**
+   * Show error details
+   */
+  showErrors?: boolean;
+}
+
+/**
+ * Dynamically render TSX/JSX source as a React component, entirely in the
+ * browser: transpile with sucrase, then execute in a sandboxed CommonJS-style
+ * module (`require`/`module`/`exports` shims resolve only against the
+ * provided module map — nothing else is reachable from the sandbox).
+ */
+export const DynamicComponentRenderer: React.FC<DynamicComponentRendererProps> = ({
+  code,
+  componentProps = {},
+  externalImports = {},
+  showErrors = true,
+}) => {
+  const [error, setError] = useState<string | null>(null);
+
+  const CompiledComponent = useMemo(() => {
+    if (!code.trim()) {
+      setError('No code provided');
+      return null;
+    }
+
+    try {
+      const modules: Record<string, any> = { ...DEFAULT_MODULES, ...externalImports };
+
+      const { code: transpiled } = transform(code, {
+        transforms: ['jsx', 'typescript', 'imports'],
+        production: true,
+      });
+
+      const requireShim = (name: string) => {
+        if (name in modules) {
+          return modules[name];
+        }
+        throw new Error(`Module "${name}" is not available here. Available: ${Object.keys(modules).join(', ')}`);
+      };
+
+      const moduleObj: { exports: any } = { exports: {} };
+      const runModule = new Function('require', 'module', 'exports', transpiled);
+      runModule(requireShim, moduleObj, moduleObj.exports);
+
+      const ComponentModule = moduleObj.exports.default || moduleObj.exports;
+
+      if (!isValidElementType(ComponentModule)) {
+        setError('Code must export a valid React component (export default ...)');
+        return null;
+      }
+
+      setError(null);
+      return ComponentModule;
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      setError(errorMessage);
+      return null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code, externalImports]);
+
+  if (error && showErrors) {
+    return (
+      <Alert severity="error" title="Component Render Error">
+        <code
+          className={css`
+            font-family: monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-word;
+          `}
+        >
+          {error}
+        </code>
+      </Alert>
+    );
+  }
+
+  if (!CompiledComponent) {
+    return null;
+  }
+
+  return (
+    <React.Suspense fallback={<Spinner />}>
+      <CompiledComponent {...componentProps} />
+    </React.Suspense>
+  );
+};

@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@grafana/ui';
-import { useAppContext, AppContext } from './SimplePanel';
+import { TabsBar, Tab, TabContent } from '@grafana/ui';
+import { useAppContext } from './SimplePanel';
 import { useBackendQuery } from '../utils/hooks';
-import { BackendQueryClient } from '../utils/api';
+import { BackendQueryClient, queryClient } from '../utils/api';
 
 /**
  * YOUR APP GOES HERE
@@ -14,7 +14,6 @@ import { BackendQueryClient } from '../utils/api';
  */
 export const App: React.FC = () => {
   const appContext = useAppContext();
-  const queryClient = new BackendQueryClient();
   const [activeTab, setActiveTab] = useState('home');
 
   return (
@@ -24,31 +23,29 @@ export const App: React.FC = () => {
         <p className="text-sm text-gray-500">Grafana React App Panel</p>
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList>
-          <TabsTrigger value="home">Home</TabsTrigger>
-          <TabsTrigger value="example">Example</TabsTrigger>
-        </TabsList>
+      <TabsBar>
+        <Tab label="Home" active={activeTab === 'home'} onChangeTab={() => setActiveTab('home')} />
+        <Tab label="Example" active={activeTab === 'example'} onChangeTab={() => setActiveTab('example')} />
+      </TabsBar>
 
-        <TabsContent value="home">
+      <TabContent>
+        {activeTab === 'home' && (
           <div className="mt-4 p-4 border rounded">
             <h2 className="text-lg font-semibold mb-2">Welcome to {appContext.options.appName}</h2>
             <p className="text-sm text-gray-600 mb-4">
               This is your generic Grafana React app panel. Replace this component with your own app:
             </p>
             <ul className="text-sm space-y-2 text-gray-600">
-              <li>✅ Import your SecuritiesPortfolio3Manual component</li>
-              <li>✅ Import your PosexErQuotidien component</li>
-              <li>✅ Use useBackendQuery() hook to fetch data (replaces getRequest)</li>
-              <li>✅ Pass appContext to access queries and options</li>
+              <li>Import your SecuritiesPortfolio3Manual component</li>
+              <li>Import your PosexErQuotidien component</li>
+              <li>Use useBackendQuery() hook to fetch data (replaces getRequest)</li>
+              <li>Pass appContext to access queries and options</li>
             </ul>
           </div>
-        </TabsContent>
+        )}
 
-        <TabsContent value="example">
-          <ExampleComponent queryClient={queryClient} />
-        </TabsContent>
-      </Tabs>
+        {activeTab === 'example' && <ExampleComponent queryClient={queryClient} />}
+      </TabContent>
     </div>
   );
 };

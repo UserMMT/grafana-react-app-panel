@@ -8,6 +8,8 @@ export interface PanelOptions {
   enableDataFetch?: boolean;
   enableTour?: boolean;
   queryConfig?: Record<string, QueryDefinition>;
+  /** Override for BackendQueryClient's base URL (defaults to the SMA prod API - see utils/api.ts). */
+  apiBaseUrl?: string;
 }
 
 /**

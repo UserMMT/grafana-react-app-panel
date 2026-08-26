@@ -1,10 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { PanelProps } from '@grafana/data';
-import { Tabs, TabsContent, TabsList, TabsTrigger, Button, Alert } from '@grafana/ui';
+import { getTemplateSrv } from '@grafana/runtime';
+import { TabsBar, Tab, TabContent, Button, Alert } from '@grafana/ui';
 import { css } from '@emotion/css';
-import { PanelOptions } from '../types';
+import { PanelOptions, AppContextData } from '../types';
 import { CodeEditor } from './CodeEditor';
 import { DynamicComponentRenderer } from './DynamicComponentRenderer';
+import { AppContext, useAppContext } from './SimplePanel';
+import { useBackendQuery, useBackendQueryMutation } from '../utils/hooks';
+import { queryClient, BackendQueryClient, hasAuthToken, setAuthToken } from '../utils/api';
 
 interface AppPanelProps extends PanelProps<PanelOptions> {}
 
@@ -20,6 +24,7 @@ export const AppPanel: React.FC<AppPanelProps> = ({
   onOptionsChange,
   width,
   height,
+  replaceVariables,
 }) => {
   const [activeTab, setActiveTab] = useState<'manage' | 'preview'>('preview');
   const [editCode, setEditCode] = useState(options.appCode || '');
@@ -34,13 +39,51 @@ export const AppPanel: React.FC<AppPanelProps> = ({
     setIsSaved(true);
   };
 
-  // Prepare external imports available to the component
-  const externalImports = React.useMemo(() => {
-    return {
-      React,
-      // Add more as needed: Button, Input, Tabs, etc.
-    };
-  }, []);
+  // BackendQueryClient talks straight to the SMA API (see utils/api.ts) -
+  // apiBaseUrl is an optional override, blank uses the built-in default.
+  useEffect(() => {
+    if (options.apiBaseUrl) {
+      queryClient.setBaseUrl(options.apiBaseUrl);
+    }
+  }, [options.apiBaseUrl]);
+
+  // Token lives in this Grafana origin's localStorage only (never in panel
+  // options / dashboard JSON) - see utils/api.ts. Re-checked each render so
+  // the prompt below disappears right after Save without a reload.
+  const [tokenPresent, setTokenPresent] = useState(hasAuthToken());
+  const [tokenInput, setTokenInput] = useState('');
+
+  // Same context shape SimplePanel builds - pasted code calling useAppContext()
+  // (per the README's migration example) needs a real Provider above it, not
+  // just the hook definition existing somewhere in the bundle.
+  const [appContext, setAppContext] = useState<AppContextData | null>(null);
+  useEffect(() => {
+    setAppContext({
+      options,
+      queries: {},
+      executeQuery: (queryName, params) =>
+        queryClient.executeQuery(queryName, params, options.queryConfig?.[queryName]?.cacheTime || 0),
+      updateQuery: () => {},
+      variables: Object.fromEntries(
+        getTemplateSrv()
+          .getVariables()
+          .map((v) => [v.name, replaceVariables(`$${v.name}`)])
+      ),
+    });
+  }, [options, replaceVariables]);
+
+  // Extra modules the pasted TSX is allowed to `import` from, on top of the
+  // built-in `react` / `@emotion/css` (see DynamicComponentRenderer). Module
+  // specifiers here are arbitrary strings (the sandbox has no real resolver,
+  // just this lookup table) - pasted code does
+  // `import { useBackendQuery, useAppContext } from 'app-panel/hooks'`.
+  const externalImports = React.useMemo(
+    () => ({
+      'app-panel/hooks': { useBackendQuery, useBackendQueryMutation, useAppContext },
+      'app-panel/api': { queryClient, BackendQueryClient },
+    }),
+    []
+  );
 
   return (
     <div
@@ -97,35 +140,27 @@ export const AppPanel: React.FC<AppPanelProps> = ({
       </div>
 
       {/* Tabs */}
-      <Tabs
-        value={activeTab}
-        onValueChange={(v) => setActiveTab(v as 'manage' | 'preview')}
+      <TabsBar>
+        <Tab
+          label="Preview"
+          active={activeTab === 'preview'}
+          onChangeTab={() => setActiveTab('preview')}
+        />
+        <Tab
+          label="Edit Code"
+          active={activeTab === 'manage'}
+          onChangeTab={() => setActiveTab('manage')}
+        />
+      </TabsBar>
+
+      <TabContent
         className={css`
           flex: 1;
-          display: flex;
-          flex-direction: column;
-          overflow: hidden;
+          overflow: auto;
+          padding: 16px;
         `}
       >
-        <TabsList className={css`
-          border-bottom: 1px solid #eee;
-          margin: 0;
-          border-radius: 0;
-        `}>
-          <TabsTrigger value="preview">👁️ Preview</TabsTrigger>
-          <TabsTrigger value="manage">✏️ Edit Code</TabsTrigger>
-        </TabsList>
-
-        {/* Preview Tab */}
-        <TabsContent
-          value="preview"
-          className={css`
-            flex: 1;
-            overflow: auto;
-            padding: 16px;
-            margin: 0;
-          `}
-        >
+        {activeTab === 'preview' && (
           <div
             className={css`
               display: flex;
@@ -134,38 +169,72 @@ export const AppPanel: React.FC<AppPanelProps> = ({
               height: 100%;
             `}
           >
-            {options.appCode ? (
-              <DynamicComponentRenderer
-                code={options.appCode}
-                externalImports={externalImports}
-                showErrors={true}
-              />
+            {!tokenPresent && (
+              <div
+                className={css`
+                  border: 1px solid #d0e8ff;
+                  background: #f0f7ff;
+                  border-radius: 4px;
+                  padding: 12px;
+                  display: flex;
+                  gap: 8px;
+                  align-items: center;
+                  flex-wrap: wrap;
+                `}
+              >
+                <span className={css`font-size: 12px; color: #003f8f;`}>
+                  No SMA API token set for this browser (stored locally, not in the dashboard) - paste one to let{' '}
+                  <code>useBackendQuery()</code> reach real data:
+                </span>
+                <input
+                  type="password"
+                  placeholder="Bearer token"
+                  value={tokenInput}
+                  onChange={(e) => setTokenInput(e.target.value)}
+                  className={css`
+                    flex: 1;
+                    min-width: 200px;
+                    padding: 6px 8px;
+                    border: 1px solid #ccc;
+                    border-radius: 4px;
+                  `}
+                />
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    if (tokenInput.trim()) {
+                      setAuthToken(tokenInput.trim());
+                      setTokenInput('');
+                      setTokenPresent(true);
+                    }
+                  }}
+                >
+                  Save
+                </Button>
+              </div>
+            )}
+            {options.appCode && appContext ? (
+              <AppContext.Provider value={appContext}>
+                <DynamicComponentRenderer
+                  code={options.appCode}
+                  externalImports={externalImports}
+                  showErrors={true}
+                />
+              </AppContext.Provider>
             ) : (
               <Alert severity="info" title="No Code">
                 Go to Edit Code tab and write your React component
               </Alert>
             )}
           </div>
-        </TabsContent>
+        )}
 
-        {/* Edit Code Tab */}
-        <TabsContent
-          value="manage"
-          className={css`
-            flex: 1;
-            overflow: auto;
-            padding: 16px;
-            margin: 0;
-            display: flex;
-            flex-direction: column;
-          `}
-        >
+        {activeTab === 'manage' && (
           <div
             className={css`
               display: flex;
               flex-direction: column;
               gap: 12px;
-              flex: 1;
             `}
           >
             <div>
@@ -202,7 +271,7 @@ export const AppPanel: React.FC<AppPanelProps> = ({
                 color: #003f8f;
               `}
             >
-              <strong>💡 Tips:</strong>
+              <strong>Tips:</strong>
               <ul
                 className={css`
                   margin: 8px 0 0 0;
@@ -216,8 +285,8 @@ export const AppPanel: React.FC<AppPanelProps> = ({
               </ul>
             </div>
           </div>
-        </TabsContent>
-      </Tabs>
+        )}
+      </TabContent>
     </div>
   );
 };

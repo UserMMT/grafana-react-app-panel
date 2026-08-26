@@ -35,6 +35,58 @@ You should see:
 - `module.js.map` - Source map
 - `plugin.json` - Plugin metadata
 
+## Signing (required for strict/self-hosted security policies)
+
+Grafana refuses to load plugins that aren't installed from the official
+catalog unless they're signed, or unless the server explicitly allow-lists
+them as unsigned. There is no "in between" — pick one:
+
+### Option A: Unsigned + allow-list (fastest, fine for internal/dev use)
+
+In `grafana.ini` (or `GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS` env var):
+
+```ini
+[plugins]
+allow_loading_unsigned_plugins = grafana-react-app-panel
+```
+
+Restart Grafana. No signing step needed. This is what most teams actually
+use for internal, self-built panels — "signed" mainly matters for plugins
+distributed to third parties or published to the public catalog.
+
+### Option B: Private signature (needed to pass a strict security policy)
+
+1. **Plugin ID can't start with `grafana-`.** That prefix is reserved for
+   Grafana Labs' own plugins and Grafana's signing service will reject it.
+   Rename the `id` in `plugin.json` to `<your-org-slug>-reactapp-panel`
+   (the org slug comes from your Grafana Cloud account — see step 2). This
+   also means updating every place that references the plugin ID string:
+   `pluginId: 'grafana-react-app-panel'` in `src/utils/api.ts`, the install
+   paths in this doc, and the plugins directory name.
+2. Create a free Grafana Cloud account at grafana.com if you don't have one
+   — this is only used to mint a signing token, it doesn't have to be where
+   the plugin actually runs.
+3. Generate an **Access Policy Token** with the `plugins:write` /
+   `PluginPublisher` scope: grafana.com → your org → Access Policies.
+4. Sign the build:
+
+   ```bash
+   export GRAFANA_ACCESS_POLICY_TOKEN=glc_xxxxxxxx
+   npm run build
+   npx @grafana/sign-plugin@latest --rootUrls https://your-grafana-host:3000
+   ```
+
+   `--rootUrls` must match the exact origin(s) Grafana serves from. If you
+   run dev/staging/prod on different hosts, pass all of them comma-separated
+   — a private signature is locked to those root URLs; it will refuse to
+   load anywhere else. This writes `dist/MANIFEST.txt`.
+5. Ship the whole `dist/` folder (including `MANIFEST.txt`) to the Grafana
+   plugins directory and restart. No `allow_loading_unsigned_plugins` entry
+   needed — Grafana verifies the manifest checksums itself.
+
+If the root URL changes later (new domain, new environment), you must
+re-sign — the manifest won't validate against a different origin.
+
 ## Create Release Archives
 
 ### Option A: Using Build Script

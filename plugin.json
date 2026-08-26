@@ -6,12 +6,15 @@
   "category": "custom",
   "description": "Embed full React applications with multi-page navigation and backend SQL queries",
   "version": "1.0.0",
-  "updated": "2024-01-01",
+  "updated": "2026-08-25",
   "author": {
     "name": "Your Name",
     "url": "https://github.com/UserMMT"
   },
   "support": "community",
+  "dependencies": {
+    "grafanaDependency": ">=10.4.0"
+  },
   "logs": [],
   "metrics": [],
   "alerting": [],
