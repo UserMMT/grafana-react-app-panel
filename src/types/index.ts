@@ -1,3 +1,5 @@
+import type { BackendQueryClient } from '../utils/api';
+
 /**
  * Panel options - configure your app behavior
  */
@@ -8,7 +10,7 @@ export interface PanelOptions {
   enableDataFetch?: boolean;
   enableTour?: boolean;
   queryConfig?: Record<string, QueryDefinition>;
-  /** Override for BackendQueryClient's base URL (defaults to the SMA prod API - see utils/api.ts). */
+  /** Backend base URL used by BackendQueryClient. Required for backend queries (https; http only for localhost) - there is no default. */
   apiBaseUrl?: string;
 }
 
@@ -49,6 +51,8 @@ export interface QueryResult {
  */
 export interface AppContextData {
   options: PanelOptions;
+  /** This panel's own client, bound to its API Base URL. */
+  queryClient: BackendQueryClient;
   queries: Record<string, QueryResult>;
   executeQuery: (queryName: string, params: Record<string, any>) => Promise<any[]>;
   updateQuery: (queryName: string, result: any) => void;

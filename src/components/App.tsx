@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { TabsBar, Tab, TabContent } from '@grafana/ui';
 import { useAppContext } from './SimplePanel';
 import { useBackendQuery } from '../utils/hooks';
-import { BackendQueryClient, queryClient } from '../utils/api';
+import { BackendQueryClient } from '../utils/api';
 
 /**
  * YOUR APP GOES HERE
@@ -44,7 +44,7 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {activeTab === 'example' && <ExampleComponent queryClient={queryClient} />}
+        {activeTab === 'example' && <ExampleComponent queryClient={appContext.queryClient} />}
       </TabContent>
     </div>
   );

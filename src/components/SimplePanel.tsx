@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { PanelProps } from '@grafana/data';
 import { getTemplateSrv } from '@grafana/runtime';
 import { Spinner, Alert } from '@grafana/ui';
 import { PanelOptions, AppContextData } from '../types';
-import { queryClient } from '../utils/api';
+import { BackendQueryClient } from '../utils/api';
 import { App } from './App';
 
 interface Props extends PanelProps<PanelOptions> {}
@@ -15,21 +15,16 @@ interface Props extends PanelProps<PanelOptions> {}
  * - Handles Grafana integration
  * - Passes data via context
  */
-export const SimplePanel: React.FC<Props> = ({
-  options,
-  data,
-  width,
-  height,
-  fieldConfig,
-  replaceVariables,
-}) => {
+export const SimplePanel: React.FC<Props> = ({ options, width, height, replaceVariables }) => {
   const [appContext, setAppContext] = useState<AppContextData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const queryClient = useMemo(() => new BackendQueryClient(options.apiBaseUrl), [options.apiBaseUrl]);
 
   useEffect(() => {
     // Initialize app context
     const context: AppContextData = {
       options,
+      queryClient,
       queries: {},
       executeQuery: async (queryName: string, params: Record<string, any>) => {
         try {
@@ -72,7 +67,7 @@ export const SimplePanel: React.FC<Props> = ({
     };
 
     setAppContext(context);
-  }, [options, replaceVariables]);
+  }, [options, replaceVariables, queryClient]);
 
   if (!appContext) {
     return <Spinner />;

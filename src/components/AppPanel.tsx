@@ -1,14 +1,22 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { PanelProps } from '@grafana/data';
 import { getTemplateSrv } from '@grafana/runtime';
 import { TabsBar, Tab, TabContent, Button, Alert } from '@grafana/ui';
 import { css } from '@emotion/css';
 import { PanelOptions, AppContextData } from '../types';
 import { CodeEditor } from './CodeEditor';
+import { CodeTrustPrompt } from './CodeTrustPrompt';
 import { DynamicComponentRenderer } from './DynamicComponentRenderer';
 import { AppContext, useAppContext } from './SimplePanel';
 import { useBackendQuery, useBackendQueryMutation } from '../utils/hooks';
-import { queryClient, BackendQueryClient, hasAuthToken, setAuthToken } from '../utils/api';
+import {
+  BackendQueryClient,
+  hasAuthToken,
+  originOf,
+  setAuthToken,
+  withDefaultBaseUrl,
+} from '../utils/api';
+import { isCodeTrusted, sha256, trustCode } from '../utils/trust';
 
 interface AppPanelProps extends PanelProps<PanelOptions> {}
 
@@ -19,19 +27,15 @@ interface AppPanelProps extends PanelProps<PanelOptions> {}
  * 3. Stores code in panel options
  * 4. Passes props and dependencies to rendered component
  */
-export const AppPanel: React.FC<AppPanelProps> = ({
-  options,
-  onOptionsChange,
-  width,
-  height,
-  replaceVariables,
-}) => {
+export const AppPanel: React.FC<AppPanelProps> = ({ options, onOptionsChange, replaceVariables }) => {
   const [activeTab, setActiveTab] = useState<'manage' | 'preview'>('preview');
   const [editCode, setEditCode] = useState(options.appCode || '');
   const [isSaved, setIsSaved] = useState(true);
 
-  // Save code to panel options
+  // The author saving code here is the one who wrote it: mark that exact code
+  // as trusted for this browser so it doesn't prompt them for their own edit.
   const handleSaveCode = () => {
+    trustCode(sha256(editCode));
     onOptionsChange({
       ...options,
       appCode: editCode,
@@ -39,19 +43,24 @@ export const AppPanel: React.FC<AppPanelProps> = ({
     setIsSaved(true);
   };
 
-  // BackendQueryClient talks straight to the SMA API (see utils/api.ts) -
-  // apiBaseUrl is an optional override, blank uses the built-in default.
-  useEffect(() => {
-    if (options.apiBaseUrl) {
-      queryClient.setBaseUrl(options.apiBaseUrl);
-    }
-  }, [options.apiBaseUrl]);
+  // One client per panel, bound to this panel's API Base URL. (A shared
+  // module-level client made panels with different URLs overwrite each other.)
+  const client = useMemo(() => new BackendQueryClient(options.apiBaseUrl), [options.apiBaseUrl]);
+  const apiOrigin = client.baseUrl ? originOf(client.baseUrl) : null;
+  const apiBaseUrlInvalid = !!options.apiBaseUrl?.trim() && !client.baseUrl;
 
   // Token lives in this Grafana origin's localStorage only (never in panel
-  // options / dashboard JSON) - see utils/api.ts. Re-checked each render so
-  // the prompt below disappears right after Save without a reload.
-  const [tokenPresent, setTokenPresent] = useState(hasAuthToken());
+  // options / dashboard JSON), scoped to the API origin - see utils/api.ts.
   const [tokenInput, setTokenInput] = useState('');
+  // Token and approval are read from localStorage on every render (cheap);
+  // this just re-renders right after Save / Trust without a reload.
+  const [, refreshStoredState] = useState(0);
+  const tokenPresent = hasAuthToken(client.baseUrl);
+
+  // Approval is keyed by the saved code's hash, so the prompt reappears
+  // whenever anyone edits the code (see utils/trust.ts).
+  const codeHash = useMemo(() => sha256(options.appCode || ''), [options.appCode]);
+  const codeTrusted = isCodeTrusted(codeHash);
 
   // Same context shape SimplePanel builds - pasted code calling useAppContext()
   // (per the README's migration example) needs a real Provider above it, not
@@ -60,9 +69,10 @@ export const AppPanel: React.FC<AppPanelProps> = ({
   useEffect(() => {
     setAppContext({
       options,
+      queryClient: client,
       queries: {},
       executeQuery: (queryName, params) =>
-        queryClient.executeQuery(queryName, params, options.queryConfig?.[queryName]?.cacheTime || 0),
+        client.executeQuery(queryName, params, options.queryConfig?.[queryName]?.cacheTime || 0),
       updateQuery: () => {},
       variables: Object.fromEntries(
         getTemplateSrv()
@@ -70,19 +80,19 @@ export const AppPanel: React.FC<AppPanelProps> = ({
           .map((v) => [v.name, replaceVariables(`$${v.name}`)])
       ),
     });
-  }, [options, replaceVariables]);
+  }, [options, replaceVariables, client]);
 
   // Extra modules the pasted TSX is allowed to `import` from, on top of the
   // built-in `react` / `@emotion/css` (see DynamicComponentRenderer). Module
-  // specifiers here are arbitrary strings (the sandbox has no real resolver,
-  // just this lookup table) - pasted code does
+  // specifiers here are arbitrary strings (there is no real resolver, just
+  // this lookup table) - pasted code does
   // `import { useBackendQuery, useAppContext } from 'app-panel/hooks'`.
-  const externalImports = React.useMemo(
+  const externalImports = useMemo(
     () => ({
       'app-panel/hooks': { useBackendQuery, useBackendQueryMutation, useAppContext },
-      'app-panel/api': { queryClient, BackendQueryClient },
+      'app-panel/api': { queryClient: client, BackendQueryClient: withDefaultBaseUrl(client.baseUrl) },
     }),
-    []
+    [client]
   );
 
   return (
@@ -169,7 +179,13 @@ export const AppPanel: React.FC<AppPanelProps> = ({
               height: 100%;
             `}
           >
-            {!tokenPresent && (
+            {apiBaseUrlInvalid && (
+              <Alert severity="warning" title="Invalid API Base URL">
+                The API Base URL in the panel options must be an https:// URL (http:// is only accepted for localhost).
+                Backend queries are disabled until it is fixed.
+              </Alert>
+            )}
+            {apiOrigin && !tokenPresent && (
               <div
                 className={css`
                   border: 1px solid #d0e8ff;
@@ -183,8 +199,9 @@ export const AppPanel: React.FC<AppPanelProps> = ({
                 `}
               >
                 <span className={css`font-size: 12px; color: #003f8f;`}>
-                  No SMA API token set for this browser (stored locally, not in the dashboard) - paste one to let{' '}
-                  <code>useBackendQuery()</code> reach real data:
+                  No API token stored for <code>{apiOrigin}</code> in this browser. Paste one to let{' '}
+                  <code>useBackendQuery()</code> reach real data (kept locally, never in the dashboard, and only ever
+                  sent to <code>{apiOrigin}</code>):
                 </span>
                 <input
                   type="password"
@@ -202,10 +219,10 @@ export const AppPanel: React.FC<AppPanelProps> = ({
                 <Button
                   size="sm"
                   onClick={() => {
-                    if (tokenInput.trim()) {
-                      setAuthToken(tokenInput.trim());
+                    if (client.baseUrl && tokenInput.trim()) {
+                      setAuthToken(client.baseUrl, tokenInput.trim());
                       setTokenInput('');
-                      setTokenPresent(true);
+                      refreshStoredState((n) => n + 1);
                     }
                   }}
                 >
@@ -213,7 +230,15 @@ export const AppPanel: React.FC<AppPanelProps> = ({
                 </Button>
               </div>
             )}
-            {options.appCode && appContext ? (
+            {options.appCode && appContext && !codeTrusted ? (
+              <CodeTrustPrompt
+                code={options.appCode}
+                onTrust={() => {
+                  trustCode(codeHash);
+                  refreshStoredState((n) => n + 1);
+                }}
+              />
+            ) : options.appCode && appContext ? (
               <AppContext.Provider value={appContext}>
                 <DynamicComponentRenderer
                   code={options.appCode}

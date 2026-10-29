@@ -1,54 +1,105 @@
-const DEFAULT_API_BASE_URL = 'https://beta.sma-it.com/SMA_APP/API';
-const AUTH_TOKEN_STORAGE_KEY = 'access_token';
+const TOKEN_KEY_PREFIX = 'grafana-react-app-panel:token:';
 
 /**
- * localStorage on THIS page's origin (wherever Grafana is served from) -
- * not the same storage bucket as cashflow-banque's own `access_token`
- * (different origin = different localStorage). Set once per browser via
- * setAuthToken() (see the prompt AppPanel shows when this is empty).
+ * Validates a backend base URL and returns it normalized (no query, hash or
+ * trailing slash; the path is kept), or null when it is blank or unsafe.
+ * Only https is accepted, plus plain http for loopback hosts (local dev):
+ * the API token must never travel over cleartext to a remote host.
  */
-export function getAuthToken(): string | null {
+export function normalizeBaseUrl(raw: string | null | undefined): string | null {
+  const value = (raw ?? '').trim();
+  if (!value) {
+    return null;
+  }
+
+  let url: URL;
   try {
-    return localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  const allowedProtocol = url.protocol === 'https:' || (url.protocol === 'http:' && loopback);
+  if (!allowedProtocol || url.username || url.password) {
+    return null;
+  }
+
+  return url.origin + url.pathname.replace(/\/+$/, '');
+}
+
+export function originOf(baseUrl: string): string {
+  return new URL(baseUrl).origin;
+}
+
+/**
+ * The API token lives in localStorage on THIS page's origin (wherever Grafana
+ * is served from), under a key scoped to the backend origin it was entered
+ * for. A token entered for https://api.example.com is never looked up, and so
+ * never sent, for any other origin: a dashboard whose panel options point
+ * somewhere else just asks the viewer for a new token for that origin.
+ *
+ * Security note: pasted panel code runs in the page itself (see
+ * DynamicComponentRenderer), so it can read this storage. The token is kept
+ * out of panel options so it isn't written into exported dashboard JSON, but
+ * treat it as a dev/trial setup, not something to hand a wide Grafana viewer
+ * audience.
+ */
+function tokenKey(baseUrl: string): string {
+  return TOKEN_KEY_PREFIX + originOf(baseUrl);
+}
+
+export function getAuthToken(baseUrl: string | null): string | null {
+  if (!baseUrl) {
+    return null;
+  }
+  try {
+    return localStorage.getItem(tokenKey(baseUrl));
   } catch {
     return null;
   }
 }
 
-export function setAuthToken(token: string) {
+export function setAuthToken(baseUrl: string, token: string) {
   try {
-    localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+    localStorage.setItem(tokenKey(baseUrl), token);
   } catch {
     /* ignore */
   }
 }
 
-export function hasAuthToken(): boolean {
-  return !!getAuthToken();
+export function hasAuthToken(baseUrl: string | null): boolean {
+  return !!getAuthToken(baseUrl);
+}
+
+function describeBackendFailure(queryName: string, body: any): string {
+  const detail = [body?.message, body?.error, body?.Message, body?.Error].find(
+    (candidate) => typeof candidate === 'string' && candidate.trim()
+  );
+  return detail ? `Query '${queryName}' failed: ${detail}` : `Query '${queryName}' failed: backend reported no success`;
 }
 
 /**
- * Generic API client for backend SQL queries. Replaces your getRequest()
- * calls - talks directly to the same SMA_APP_SERVICES_API endpoint
- * (`/CustomData/getWithFilter?Request=...`) that cashflow-banque's own
- * getRequest() (src/hooks/useFetch.ts) already uses, instead of a
- * `/api/plugins/call` Grafana backend route that doesn't exist (this plugin
- * has no Go backend declared in plugin.json).
+ * Generic API client for backend SQL queries. Talks to a backend exposing
+ * `POST {baseUrl}/CustomData/getWithFilter?Request=<queryName>` (there is no
+ * Grafana backend component: plugin.json declares none).
  *
- * Security note: the auth token lives in this page's localStorage only -
- * never in panel options, so it isn't written into exported dashboard JSON.
- * It IS still a real bearer token sitting in a browser tab anyone with edit
- * access to this panel can inspect/exfiltrate via pasted code, same as any
- * other client-side API key. Treat this as a dev/trial setup, not something
- * to hand a wide Grafana viewer audience without revisiting.
+ * One instance per panel, bound to that panel's API Base URL. There is
+ * deliberately no default URL: the base URL must be configured explicitly.
  */
 export class BackendQueryClient {
   private cache: Map<string, { data: any; timestamp: number }> = new Map();
-  baseUrl: string = DEFAULT_API_BASE_URL;
+  baseUrl: string | null;
 
-  setBaseUrl(url: string) {
-    if (url && url.trim()) {
-      this.baseUrl = url.replace(/\/+$/, '');
+  constructor(baseUrl?: string | null) {
+    this.baseUrl = normalizeBaseUrl(baseUrl);
+  }
+
+  setBaseUrl(url: string | null | undefined) {
+    const next = normalizeBaseUrl(url);
+    if (next !== this.baseUrl) {
+      this.baseUrl = next;
+      this.cache.clear();
     }
   }
 
@@ -63,6 +114,11 @@ export class BackendQueryClient {
     params: Record<string, any> = {},
     cacheTime: number = 0
   ): Promise<T[]> {
+    const baseUrl = this.baseUrl;
+    if (!baseUrl) {
+      throw new Error('API Base URL is not configured (it must be an https:// URL) - set it in the panel options.');
+    }
+
     const cacheKey = this.getCacheKey(queryName, params);
 
     if (cacheTime > 0) {
@@ -72,13 +128,12 @@ export class BackendQueryClient {
       }
     }
 
-    const token = getAuthToken();
+    const token = getAuthToken(baseUrl);
     if (!token) {
-      throw new Error('No SMA API token set for this browser - see the token prompt in the panel.');
+      throw new Error(`No API token stored for ${originOf(baseUrl)} - paste one in the token prompt shown in the panel.`);
     }
 
-    // Same param shape the .NET endpoint expects everywhere in
-    // cashflow-banque: an array of {name, value, type}, not the
+    // The .NET endpoint expects an array of {name, value, type}, not the
     // {DateArrete: '...'} object useBackendQuery's callers pass.
     const paramArray = Object.entries(params).map(([name, value]) => ({
       name,
@@ -87,13 +142,17 @@ export class BackendQueryClient {
     }));
 
     try {
-      const res = await fetch(`${this.baseUrl}/CustomData/getWithFilter?Request=${encodeURIComponent(queryName)}`, {
+      const res = await fetch(`${baseUrl}/CustomData/getWithFilter?Request=${encodeURIComponent(queryName)}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify(paramArray),
+        // The bearer token is the credential: never attach Grafana's cookies, and
+        // never follow a redirect to another host with the request.
+        credentials: 'omit',
+        redirect: 'error',
       });
 
       if (!res.ok) {
@@ -101,7 +160,10 @@ export class BackendQueryClient {
       }
 
       const body = await res.json();
-      const data: T[] = body?.success ? body.data?.data ?? [] : [];
+      if (!body?.success) {
+        throw new Error(describeBackendFailure(queryName, body));
+      }
+      const data: T[] = body.data?.data ?? [];
 
       if (cacheTime > 0) {
         this.cache.set(cacheKey, { data, timestamp: Date.now() });
@@ -120,7 +182,7 @@ export class BackendQueryClient {
   clearCache(queryName?: string) {
     if (queryName) {
       for (const [key] of this.cache) {
-        if (key.startsWith(queryName)) {
+        if (key.startsWith(`${queryName}:`)) {
           this.cache.delete(key);
         }
       }
@@ -135,6 +197,14 @@ export class BackendQueryClient {
 }
 
 /**
- * Singleton instance
+ * A BackendQueryClient whose no-argument constructor targets `baseUrl`. This is
+ * what panel code gets as `BackendQueryClient` from 'app-panel/api', so
+ * `new BackendQueryClient()` in pasted code talks to the panel's own API Base URL.
  */
-export const queryClient = new BackendQueryClient();
+export function withDefaultBaseUrl(baseUrl: string | null | undefined): typeof BackendQueryClient {
+  return class extends BackendQueryClient {
+    constructor(url: string | null | undefined = baseUrl) {
+      super(url);
+    }
+  };
+}

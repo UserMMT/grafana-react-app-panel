@@ -1,17 +1,20 @@
-import React, { useState, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { Alert, Spinner } from '@grafana/ui';
 import { css } from '@emotion/css';
 import { isValidElementType } from 'react-is';
 import { transform } from 'sucrase';
 
 /**
- * Modules the sandboxed code is allowed to `import ... from '<name>'`.
+ * Modules the code is allowed to `import ... from '<name>'`.
  * Keyed by the module specifier, not a local variable name.
  */
 const DEFAULT_MODULES: Record<string, any> = {
   react: React,
   '@emotion/css': { css },
 };
+
+// Stable identity so the default doesn't invalidate the memo on every render.
+const NO_EXTERNAL_IMPORTS: Record<string, any> = {};
 
 interface DynamicComponentRendererProps {
   /**
@@ -38,77 +41,118 @@ interface DynamicComponentRendererProps {
   showErrors?: boolean;
 }
 
+interface CompileResult {
+  component: React.ComponentType<any> | null;
+  error: string | null;
+}
+
+function compile(code: string, modules: Record<string, any>): CompileResult {
+  if (!code.trim()) {
+    return { component: null, error: 'No code provided' };
+  }
+
+  try {
+    const { code: transpiled } = transform(code, {
+      transforms: ['jsx', 'typescript', 'imports'],
+      production: true,
+    });
+
+    // `require`/`module`/`exports` shims only control what `import` can resolve.
+    // They do NOT isolate the code: see the note on DynamicComponentRenderer.
+    const requireShim = (name: string) => {
+      if (Object.prototype.hasOwnProperty.call(modules, name)) {
+        return modules[name];
+      }
+      throw new Error(`Module "${name}" is not available here. Available: ${Object.keys(modules).join(', ')}`);
+    };
+
+    // `React` is passed in so JSX works without an explicit `import React`.
+    const moduleObj: { exports: any } = { exports: {} };
+    const runModule = new Function('require', 'module', 'exports', 'React', transpiled);
+    runModule(requireShim, moduleObj, moduleObj.exports, React);
+
+    const component = moduleObj.exports.default || moduleObj.exports;
+    if (!isValidElementType(component)) {
+      return { component: null, error: 'Code must export a valid React component (export default ...)' };
+    }
+
+    return { component: component as React.ComponentType<any>, error: null };
+  } catch (err) {
+    return { component: null, error: err instanceof Error ? err.message : 'Unknown error' };
+  }
+}
+
+const ErrorAlert: React.FC<{ title: string; message: string }> = ({ title, message }) => (
+  <Alert severity="error" title={title}>
+    <code
+      className={css`
+        font-family: monospace;
+        font-size: 12px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      `}
+    >
+      {message}
+    </code>
+  </Alert>
+);
+
+interface BoundaryProps {
+  /** Changes whenever the code is recompiled, which clears a previous crash. */
+  resetKey: unknown;
+  showErrors: boolean;
+  children: React.ReactNode;
+}
+
+/**
+ * Catches errors thrown while the compiled component renders, so one broken
+ * pasted component shows an error instead of taking down the whole panel.
+ */
+class RenderErrorBoundary extends React.Component<BoundaryProps, { error: Error | null }> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidUpdate(prev: BoundaryProps) {
+    if (prev.resetKey !== this.props.resetKey && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+
+  render() {
+    if (this.state.error) {
+      return this.props.showErrors ? (
+        <ErrorAlert title="Component Runtime Error" message={this.state.error.message} />
+      ) : null;
+    }
+    return this.props.children;
+  }
+}
+
 /**
  * Dynamically render TSX/JSX source as a React component, entirely in the
- * browser: transpile with sucrase, then execute in a sandboxed CommonJS-style
- * module (`require`/`module`/`exports` shims resolve only against the
- * provided module map — nothing else is reachable from the sandbox).
+ * browser: transpile with sucrase, then execute as a CommonJS-style module.
+ *
+ * IMPORTANT: this is NOT a sandbox. The code runs in the page's own realm
+ * (`new Function`), so it has full access to `window`, `document`,
+ * `localStorage`, `fetch` and the viewer's Grafana session. Only pass code the
+ * viewer has chosen to trust - AppPanel gates this behind an approval prompt.
  */
 export const DynamicComponentRenderer: React.FC<DynamicComponentRendererProps> = ({
   code,
   componentProps = {},
-  externalImports = {},
+  externalImports = NO_EXTERNAL_IMPORTS,
   showErrors = true,
 }) => {
-  const [error, setError] = useState<string | null>(null);
+  const { component: CompiledComponent, error } = useMemo(
+    () => compile(code, { ...DEFAULT_MODULES, ...externalImports }),
+    [code, externalImports]
+  );
 
-  const CompiledComponent = useMemo(() => {
-    if (!code.trim()) {
-      setError('No code provided');
-      return null;
-    }
-
-    try {
-      const modules: Record<string, any> = { ...DEFAULT_MODULES, ...externalImports };
-
-      const { code: transpiled } = transform(code, {
-        transforms: ['jsx', 'typescript', 'imports'],
-        production: true,
-      });
-
-      const requireShim = (name: string) => {
-        if (name in modules) {
-          return modules[name];
-        }
-        throw new Error(`Module "${name}" is not available here. Available: ${Object.keys(modules).join(', ')}`);
-      };
-
-      const moduleObj: { exports: any } = { exports: {} };
-      const runModule = new Function('require', 'module', 'exports', transpiled);
-      runModule(requireShim, moduleObj, moduleObj.exports);
-
-      const ComponentModule = moduleObj.exports.default || moduleObj.exports;
-
-      if (!isValidElementType(ComponentModule)) {
-        setError('Code must export a valid React component (export default ...)');
-        return null;
-      }
-
-      setError(null);
-      return ComponentModule;
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-      setError(errorMessage);
-      return null;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code, externalImports]);
-
-  if (error && showErrors) {
-    return (
-      <Alert severity="error" title="Component Render Error">
-        <code
-          className={css`
-            font-family: monospace;
-            font-size: 12px;
-            white-space: pre-wrap;
-            word-break: break-word;
-          `}
-        >
-          {error}
-        </code>
-      </Alert>
-    );
+  if (error) {
+    return showErrors ? <ErrorAlert title="Component Render Error" message={error} /> : null;
   }
 
   if (!CompiledComponent) {
@@ -116,8 +160,10 @@ export const DynamicComponentRenderer: React.FC<DynamicComponentRendererProps> =
   }
 
   return (
-    <React.Suspense fallback={<Spinner />}>
-      <CompiledComponent {...componentProps} />
-    </React.Suspense>
+    <RenderErrorBoundary resetKey={CompiledComponent} showErrors={showErrors}>
+      <React.Suspense fallback={<Spinner />}>
+        <CompiledComponent {...componentProps} />
+      </React.Suspense>
+    </RenderErrorBoundary>
   );
 };

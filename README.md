@@ -90,8 +90,7 @@ useEffect(() => {
 import { useBackendQuery } from '@/utils/hooks';
 import { useAppContext } from './SimplePanel';
 
-const appContext = useAppContext();
-const queryClient = new BackendQueryClient();
+const { queryClient } = useAppContext(); // this panel's client, bound to its API Base URL
 
 const { data: myData, loading, error } = useBackendQuery(
   'TRESO_GET_DATE_TFJ_PREC',
@@ -188,17 +187,36 @@ Grafana Panel
 
 ## Backend Integration
 
-The plugin calls your backend at:
+The plugin has no Grafana backend component. The browser calls your own API directly:
 ```
-POST /api/plugins/call
-{
-  "pluginId": "grafana-react-app-panel",
-  "method": "TRESO_GET_DATE_TFJ_PREC",
-  "params": { "dateArrete": "2024-01-15" }
-}
+POST {API Base URL}/CustomData/getWithFilter?Request=TRESO_GET_DATE_TFJ_PREC
+Authorization: Bearer <token>
+[{ "name": "dateArrete", "value": "2024-01-15", "type": "string" }]
 ```
 
-Make sure your Grafana instance has a backend handler for these requests.
+and expects `{ "success": true, "data": { "data": [ ...rows ] } }`. A response with
+`success: false` (or no `success`) makes the query fail with the backend's `message`/`error` text.
+
+Set the **API Base URL** in the panel options (required, no default). It must be `https://`
+(plain `http://` is only accepted for `localhost`). Each panel has its own client, so panels can
+point at different backends.
+
+## Security Model
+
+**Panel code is not sandboxed.** The TSX in the panel runs in the Grafana page itself, with the
+viewer's session, `localStorage` and network access. Anyone who can edit a dashboard can therefore
+run code as whoever opens it next. To keep that from being silent:
+
+- Code is **not run until the viewer approves it** ("Trust and run"). Approval is per browser and
+  covers that exact code only (SHA-256): any edit asks again. Saving code from the panel's own
+  *Edit Code* tab approves it for the author.
+- Only give Editor rights on dashboards using this panel to people you would trust with that
+  access. A real isolation boundary (sandboxed iframe) is not implemented.
+
+**API token.** Pasted in the panel, stored in this browser's `localStorage` under a key scoped to
+the API origin, and only ever sent to that origin (no cookies, no redirects followed). A dashboard
+that points the panel at a different origin finds no token and asks for a new one for that origin.
+Panel code can still read `localStorage`, so treat the token as a dev/trial credential.
 
 ## Migration Checklist
 
@@ -206,7 +224,7 @@ Make sure your Grafana instance has a backend handler for these requests.
 - [ ] Update `App.tsx` to render your components
 - [ ] Replace `getRequest()` calls with `useBackendQuery()` hook
 - [ ] Define SQL queries in panel config JSON
-- [ ] Update backend to handle `/api/plugins/call` requests
+- [ ] Set the panel's **API Base URL** and paste an API token for it
 - [ ] Build plugin: `npm run build`
 - [ ] Install to Grafana and enable plugin
 - [ ] Add panel to dashboard
@@ -222,7 +240,8 @@ See `examples/` directory for:
 
 ### Queries not executing
 - Check browser console for errors
-- Verify backend `/api/plugins/call` handler is implemented
+- Verify the panel's **API Base URL** is set and an API token was pasted for that origin
+- Verify the panel code was approved ("Trust and run") in this browser
 - Check panel configuration JSON format
 
 ### Data not updating

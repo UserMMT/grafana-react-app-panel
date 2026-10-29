@@ -22,7 +22,8 @@ export const plugin = new PanelPlugin<PanelOptions>(AppPanel).setPanelOptions((b
     .addTextInput({
       path: 'apiBaseUrl',
       name: 'API Base URL',
-      description: 'Backend base URL for useBackendQuery() calls. Leave blank to use the default (see utils/api.ts).',
+      description:
+        'Required for useBackendQuery(): https:// base URL of the backend (http:// only for localhost). The API token you paste in the panel is stored per origin and only ever sent to this origin.',
       defaultValue: '',
     })
     .addCustomEditor({

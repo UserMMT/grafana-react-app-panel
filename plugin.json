@@ -5,10 +5,8 @@
   "state": "alpha",
   "category": "custom",
   "description": "Embed full React applications with multi-page navigation and backend SQL queries",
-  "version": "1.0.0",
-  "updated": "2026-08-25",
   "author": {
-    "name": "Your Name",
+    "name": "UserMMT",
     "url": "https://github.com/UserMMT"
   },
   "support": "community",
@@ -16,6 +14,8 @@
     "grafanaDependency": ">=10.4.0"
   },
   "info": {
+    "version": "1.0.0",
+    "updated": "2026-08-25",
     "keywords": [
       "react",
       "app",

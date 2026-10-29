@@ -1,6 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
 import { BackendQueryClient } from './api';
-import { QueryResult } from '../types';
 
 /**
  * Hook to fetch data from backend SQL queries
@@ -50,6 +49,8 @@ export function useBackendQuery<T = any>(
     return () => {
       mounted = false;
     };
+    // params is compared by value (callers pass a fresh object literal each render)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryName, JSON.stringify(params), queryClient, cacheTime]);
 
   return { data, loading, error };
